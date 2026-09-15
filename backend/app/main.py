@@ -6,6 +6,7 @@ from uuid import uuid4
 import re
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import (
@@ -18,6 +19,7 @@ from app.config import (
     EMBEDDING_BATCH_SIZE,
     ALLOWED_EXTENSIONS,
     get_process_memory_mb,
+    InsufficientMemoryError,
     logger
 )
 
@@ -70,6 +72,18 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*']
 )
+
+
+@app.exception_handler(InsufficientMemoryError)
+async def insufficient_memory_handler(request, exc: InsufficientMemoryError):
+    logger.warning(f"[MEMORY_GUARD] Returning structured 503 response: {exc}")
+    return JSONResponse(
+        status_code=503,
+        content={
+            "status": "resource_unavailable",
+            "message": "The verification model requires more memory than the current deployment instance provides."
+        }
+    )
 
 
 @app.get('/')

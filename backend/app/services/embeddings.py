@@ -5,7 +5,13 @@ import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
 
-from app.config import EMBEDDING_MODEL, logger, get_process_memory_mb
+from app.config import (
+    EMBEDDING_MODEL,
+    logger,
+    get_process_memory_mb,
+    check_safe_memory_for_model,
+    InsufficientMemoryError
+)
 
 
 _model: SentenceTransformer | None = None
@@ -21,13 +27,20 @@ def get_embedding_model() -> SentenceTransformer:
     with _model_lock:
         if _model is None:
             logger.info(f"[GovVerify] RAM before BGE load: {get_process_memory_mb()} MB")
+            check_safe_memory_for_model(EMBEDDING_MODEL)
             logger.info(f"[GovVerify] Loading BGE-M3 model on CPU: {EMBEDDING_MODEL}")
-            model = SentenceTransformer(
-                EMBEDDING_MODEL,
-                device='cpu',
-                model_kwargs={'low_cpu_mem_usage': True}
-            )
-            model.eval()
+            try:
+                model = SentenceTransformer(
+                    EMBEDDING_MODEL,
+                    device='cpu',
+                    model_kwargs={'low_cpu_mem_usage': True}
+                )
+                model.eval()
+            except (MemoryError, RuntimeError) as mem_err:
+                logger.error(f"Failed to allocate memory for BGE-M3 model: {mem_err}")
+                raise InsufficientMemoryError(
+                    f"Out of memory allocating BGE-M3 on CPU: {mem_err}"
+                )
 
             _model = model
             gc.collect()

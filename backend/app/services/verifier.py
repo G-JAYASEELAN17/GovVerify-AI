@@ -5,7 +5,15 @@ from typing import Tuple, Dict, Optional, List
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-from app.config import NLI_MODEL, NLI_ENTAILMENT_THRESHOLD, NLI_CONTRADICTION_THRESHOLD, logger, get_process_memory_mb
+from app.config import (
+    NLI_MODEL,
+    NLI_ENTAILMENT_THRESHOLD,
+    NLI_CONTRADICTION_THRESHOLD,
+    logger,
+    get_process_memory_mb,
+    check_safe_memory_for_model,
+    InsufficientMemoryError
+)
 
 
 _nli: Tuple[object, object] | None = None
@@ -20,14 +28,21 @@ def get_verifier_model():
     with _nli_lock:
         if _nli is None:
             logger.info(f"[GovVerify] RAM before DeBERTa: {get_process_memory_mb()} MB")
+            check_safe_memory_for_model(NLI_MODEL, required_headroom_mb=250.0)
             logger.info(f"[GovVerify] Loading DeBERTa NLI model on CPU: {NLI_MODEL}")
-            tok = AutoTokenizer.from_pretrained(NLI_MODEL)
-            model = AutoModelForSequenceClassification.from_pretrained(
-                NLI_MODEL,
-                low_cpu_mem_usage=True
-            )
-            model.to('cpu')
-            model.eval()
+            try:
+                tok = AutoTokenizer.from_pretrained(NLI_MODEL)
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    NLI_MODEL,
+                    low_cpu_mem_usage=True
+                )
+                model.to('cpu')
+                model.eval()
+            except (MemoryError, RuntimeError) as mem_err:
+                logger.error(f"Failed to allocate memory for DeBERTa model: {mem_err}")
+                raise InsufficientMemoryError(
+                    f"Out of memory allocating DeBERTa on CPU: {mem_err}"
+                )
 
             _nli = (tok, model)
             gc.collect()

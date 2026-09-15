@@ -459,3 +459,30 @@ def test_upload_duplicate_pdf_deduplication(tmp_path: Path):
     assert doc1['file_hash'] == doc2['file_hash']
 
 
+# Test 21: Graceful insufficient-memory handling & server liveness
+def test_insufficient_memory_graceful_handling(monkeypatch):
+    from app.config import InsufficientMemoryError
+    from app.services import embeddings
+
+    # Simulate insufficient memory guard trigger
+    def mock_get_embedding_model():
+        raise InsufficientMemoryError("Container memory limit is 512 MB. Model BAAI/bge-m3 requires more memory.")
+
+    monkeypatch.setattr(embeddings, "get_embedding_model", mock_get_embedding_model)
+
+    res = client.post('/api/verify/question', json={'question': 'What are the agricultural scheme rules?'})
+    assert res.status_code == 503
+    data = res.json()
+    assert data['status'] == 'resource_unavailable'
+    assert 'requires more memory' in data['message']
+
+    # Crucial acceptance check: Server remains 100% alive and healthy after error
+    health_res = client.get('/health')
+    assert health_res.status_code == 200
+    assert health_res.json()['status'] == 'healthy'
+
+    root_res = client.get('/')
+    assert root_res.status_code == 200
+
+
+

@@ -98,14 +98,12 @@ OFFICIAL_SEED_DOCUMENTS = [
 
 def ensure_seed_data():
     """Seeds multi-domain official government PDFs into FAISS index if missing."""
+    index, metadata = load_index()
     existing_docs = get_all_documents()
     existing_ids = {d['id'] for d in existing_docs}
 
+    # If index and documents catalog already exist on disk, ensure PDFs exist and return immediately
     for item in OFFICIAL_SEED_DOCUMENTS:
-        if item['doc_id'] in existing_ids:
-            continue
-
-        logger.info(f"Seeding missing domain document: {item['filename']} ({item['category']})...")
         dest_path = DOCS_DIR / item['filename']
         if not dest_path.exists():
             doc = fitz.open()
@@ -116,6 +114,18 @@ def ensure_seed_data():
             doc.save(str(dest_path))
             doc.close()
 
+    # If all seed documents are already registered in the catalog and FAISS index is loaded
+    if index is not None and index.ntotal > 0 and len(metadata) > 0 and all(item['doc_id'] in existing_ids for item in OFFICIAL_SEED_DOCUMENTS):
+        logger.info(f"Official seed corpus already indexed ({index.ntotal} vectors). Skipping re-embedding.")
+        return
+
+    # Otherwise index missing documents
+    model_used = False
+    for item in OFFICIAL_SEED_DOCUMENTS:
+        if item['doc_id'] in existing_ids:
+            continue
+
+        dest_path = DOCS_DIR / item['filename']
         chunks, pages_count, pages_text, file_hash, _ = extract_chunks(
             dest_path,
             document_id=item['doc_id'],
@@ -123,8 +133,10 @@ def ensure_seed_data():
         )
 
         if chunks:
-            embs = encode([c['text'] for c in chunks])
+            logger.info(f"Seeding missing domain document: {item['filename']} ({item['category']})...")
+            embs = encode([c['text'] for c in chunks], batch_size=2)
             add_chunks(embs, chunks)
+            model_used = True
 
         doc_record = {
             'id': item['doc_id'],
@@ -141,8 +153,9 @@ def ensure_seed_data():
         }
         register_document(doc_record)
 
-    import gc
-    release_embedding_model()
-    gc.collect()
-    logger.info("Multi-domain official government corpus verification complete.")
+    if model_used:
+        import gc
+        release_embedding_model()
+        gc.collect()
+    logger.info("Multi-domain official government corpus check complete.")
 

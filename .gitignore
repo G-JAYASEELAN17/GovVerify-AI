@@ -47,8 +47,9 @@ backend/data/uploads/*
 backend/data/reports/
 backend/data/reports.json
 backend/data/cache/
-backend/data/index/*.faiss
-backend/data/index/*.json
+!backend/data/index/evidence.faiss
+!backend/data/index/metadata.json
+!backend/data/index/docs_catalog.json
 !backend/data/index/.gitkeep
 !backend/data/documents/.gitkeep
 !backend/data/.gitkeep
