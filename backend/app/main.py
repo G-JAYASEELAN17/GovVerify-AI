@@ -162,6 +162,8 @@ async def upload_document(file: UploadFile = File(...)):
         # Generate embeddings and add to FAISS
         embeddings = encode([c['text'] for c in chunks])
         add_or_replace_document_chunks(doc_id, embeddings, chunks, encode)
+        import gc
+        gc.collect()
 
         doc_record = {
             'id': doc_id,

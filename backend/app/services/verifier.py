@@ -1,5 +1,6 @@
+import gc
 import re
-from functools import lru_cache
+from threading import Lock
 from typing import Tuple, Dict, Optional, List
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -7,13 +8,28 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from app.config import NLI_MODEL, NLI_ENTAILMENT_THRESHOLD, NLI_CONTRADICTION_THRESHOLD, logger
 
 
-@lru_cache(maxsize=1)
+_nli: Tuple[object, object] | None = None
+_nli_lock = Lock()
+
+
 def get_nli():
-    logger.info(f"Loading NLI verification model: {NLI_MODEL}")
-    tok = AutoTokenizer.from_pretrained(NLI_MODEL)
-    model = AutoModelForSequenceClassification.from_pretrained(NLI_MODEL)
-    model.eval()
-    return tok, model
+    global _nli
+    if _nli is not None:
+        return _nli
+
+    with _nli_lock:
+        if _nli is None:
+            logger.info(f"Loading NLI verification model on CPU: {NLI_MODEL}")
+            tok = AutoTokenizer.from_pretrained(NLI_MODEL)
+            model = AutoModelForSequenceClassification.from_pretrained(
+                NLI_MODEL,
+                low_cpu_mem_usage=True
+            )
+            model.to('cpu')
+            model.eval()
+            _nli = (tok, model)
+            gc.collect()
+    return _nli
 
 
 def extract_numeric_tokens(text: str) -> Dict[str, List[float]]:
@@ -139,7 +155,7 @@ def verify(claim: str, evidence: str) -> Tuple[str, str, int, Dict[str, float], 
     tok, model = get_nli()
     inputs = tok(evidence, claim, return_tensors='pt', truncation=True, max_length=512)
     
-    with torch.no_grad():
+    with torch.inference_mode():
         logits = model(**inputs).logits
         probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
 

@@ -141,5 +141,7 @@ def ensure_seed_data():
         }
         register_document(doc_record)
 
+    import gc
+    gc.collect()
     logger.info("Multi-domain official government corpus verification complete.")
 

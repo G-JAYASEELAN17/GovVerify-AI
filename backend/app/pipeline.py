@@ -1,3 +1,4 @@
+import gc
 from datetime import datetime
 from uuid import uuid4
 import json
@@ -274,6 +275,7 @@ async def verify_answer_flow(answer: str, question: str = '') -> Dict:
     }
     
     _save_report(report)
+    gc.collect()
     return report
 
 
@@ -407,5 +409,6 @@ async def verify_question_flow(question: str) -> Dict:
     }
     
     _save_report(report)
+    gc.collect()
     return report
 
