@@ -52,7 +52,7 @@ CORS_ORIGINS = [orig.strip() for orig in CORS_ORIGINS_RAW.split(',') if orig.str
     'http://localhost:5173',
     'http://127.0.0.1:5173',
     'http://localhost:3000',
-    '*'
+    'http://127.0.0.1:3000'
 ]
 MAX_FILE_SIZE_MB = int(os.getenv('MAX_UPLOAD_SIZE_MB', os.getenv('MAX_FILE_SIZE_MB', '25')))
 MAX_UPLOAD_SIZE_MB = MAX_FILE_SIZE_MB

@@ -28,14 +28,6 @@ def get_verifier_model():
             )
             model.to('cpu')
             model.eval()
-            try:
-                # Dynamic INT8 quantization for CPU linear layers (reduces RAM footprint)
-                model = torch.quantization.quantize_dynamic(
-                    model, {torch.nn.Linear}, dtype=torch.qint8
-                )
-                model.eval()
-            except Exception as q_err:
-                logger.debug(f"DeBERTa dynamic quantization note: {q_err}")
 
             _nli = (tok, model)
             gc.collect()

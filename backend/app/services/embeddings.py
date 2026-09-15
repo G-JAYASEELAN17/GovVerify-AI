@@ -28,16 +28,6 @@ def get_embedding_model() -> SentenceTransformer:
                 model_kwargs={'low_cpu_mem_usage': True}
             )
             model.eval()
-            try:
-                # Dynamic INT8 quantization for CPU linear layers (reduces RAM footprint)
-                if hasattr(model, '_modules') and '0' in model._modules:
-                    sub = model._modules['0']
-                    if hasattr(sub, 'auto_model'):
-                        sub.auto_model = torch.quantization.quantize_dynamic(
-                            sub.auto_model, {torch.nn.Linear}, dtype=torch.qint8
-                        )
-            except Exception as q_err:
-                logger.debug(f"BGE-M3 dynamic quantization note: {q_err}")
 
             _model = model
             gc.collect()

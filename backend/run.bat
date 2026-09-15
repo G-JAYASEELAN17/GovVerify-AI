@@ -1,11 +1,15 @@
 @echo off
 echo Starting GovVerify AI Backend (GOV-16)...
 cd /d "%~dp0"
-if not exist .venv (
-    echo Creating virtual environment...
-    python -m venv .venv
+if exist ..\.venv (
+    call ..\.venv\Scripts\activate.bat
+) else (
+    if not exist .venv (
+        echo Creating virtual environment...
+        python -m venv .venv
+    )
+    call .\.venv\Scripts\activate.bat
 )
-call .\.venv\Scripts\activate.bat
 echo Installing/verifying dependencies...
 pip install -r requirements.txt
 echo Starting FastAPI server on http://localhost:8000 ...
