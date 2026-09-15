@@ -1,72 +1,35 @@
-import gc
-from threading import Lock
 from typing import List, Union
 import numpy as np
-import torch
-from sentence_transformers import SentenceTransformer
 
-from app.config import (
-    EMBEDDING_MODEL,
-    logger,
-    get_process_memory_mb,
-    check_safe_memory_for_model,
-    InsufficientMemoryError
-)
+from app.config import EMBEDDING_MODEL, logger
+from app.services.providers import get_embedding_provider
 
 
-_model: SentenceTransformer | None = None
-_model_lock = Lock()
 EMBEDDING_DIM = 1024
 
 
-def get_embedding_model() -> SentenceTransformer:
-    global _model
-    if _model is not None:
-        return _model
-
-    with _model_lock:
-        if _model is None:
-            logger.info(f"[GovVerify] RAM before BGE load: {get_process_memory_mb()} MB")
-            check_safe_memory_for_model(EMBEDDING_MODEL)
-            logger.info(f"[GovVerify] Loading BGE-M3 model on CPU: {EMBEDDING_MODEL}")
-            try:
-                model = SentenceTransformer(
-                    EMBEDDING_MODEL,
-                    device='cpu',
-                    model_kwargs={'low_cpu_mem_usage': True}
-                )
-                model.eval()
-            except (MemoryError, RuntimeError) as mem_err:
-                logger.error(f"Failed to allocate memory for BGE-M3 model: {mem_err}")
-                raise InsufficientMemoryError(
-                    f"Out of memory allocating BGE-M3 on CPU: {mem_err}"
-                )
-
-            _model = model
-            gc.collect()
-            logger.info(f"[GovVerify] RAM after BGE load: {get_process_memory_mb()} MB")
-    return _model
+def get_embedding_model():
+    """Returns local embedding model if available via provider."""
+    provider = get_embedding_provider()
+    if hasattr(provider, '_get_model'):
+        return provider._get_model()
+    return None
 
 
-def get_model() -> SentenceTransformer:
+def get_model():
     return get_embedding_model()
 
 
 def release_embedding_model():
-    """Explicitly frees BGE-M3 from RAM to avoid concurrent memory overlap with DeBERTa."""
-    global _model
-    with _model_lock:
-        if _model is not None:
-            logger.info("Releasing BGE-M3 embedding model from RAM...")
-            del _model
-            _model = None
-            gc.collect()
-            logger.info(f"[GovVerify] RAM after cleanup: {get_process_memory_mb()} MB")
+    """Explicitly releases BGE-M3 from RAM/memory."""
+    provider = get_embedding_provider()
+    provider.release()
 
 
 def encode(texts: Union[str, List[str]], batch_size: int = 4, release_after: bool = False) -> np.ndarray:
     """
     Generates normalized dense vector embeddings with small CPU-friendly batch sizes.
+    Routes to Local or Remote BGE-M3 provider according to deployment environment.
     Always returns float32 unit-normalized numpy array.
     """
     if isinstance(texts, str):
@@ -74,18 +37,9 @@ def encode(texts: Union[str, List[str]], batch_size: int = 4, release_after: boo
     if not texts:
         return np.empty((0, get_embedding_dimension()), dtype='float32')
 
-    model = get_embedding_model()
-    logger.info(f"[GovVerify] RAM before embedding: {get_process_memory_mb()} MB")
-    with torch.inference_mode():
-        embeddings = model.encode(
-            texts,
-            batch_size=batch_size,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False
-        )
-    logger.info(f"[GovVerify] RAM after embedding: {get_process_memory_mb()} MB")
-    
+    provider = get_embedding_provider()
+    embeddings = provider.encode(texts, batch_size=batch_size)
+
     if release_after:
         release_embedding_model()
 
@@ -93,8 +47,5 @@ def encode(texts: Union[str, List[str]], batch_size: int = 4, release_after: boo
 
 
 def get_embedding_dimension() -> int:
-    global _model
-    if _model is not None:
-        return _model.get_sentence_embedding_dimension()
     return EMBEDDING_DIM
 

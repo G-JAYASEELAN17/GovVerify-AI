@@ -1,53 +1,21 @@
-import gc
 import re
-from threading import Lock
 from typing import Tuple, Dict, Optional, List
-import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 from app.config import (
     NLI_MODEL,
     NLI_ENTAILMENT_THRESHOLD,
     NLI_CONTRADICTION_THRESHOLD,
-    logger,
-    get_process_memory_mb,
-    check_safe_memory_for_model,
-    InsufficientMemoryError
+    logger
 )
-
-
-_nli: Tuple[object, object] | None = None
-_nli_lock = Lock()
+from app.services.providers import get_nli_provider
 
 
 def get_verifier_model():
-    global _nli
-    if _nli is not None:
-        return _nli
-
-    with _nli_lock:
-        if _nli is None:
-            logger.info(f"[GovVerify] RAM before DeBERTa: {get_process_memory_mb()} MB")
-            check_safe_memory_for_model(NLI_MODEL, required_headroom_mb=250.0)
-            logger.info(f"[GovVerify] Loading DeBERTa NLI model on CPU: {NLI_MODEL}")
-            try:
-                tok = AutoTokenizer.from_pretrained(NLI_MODEL)
-                model = AutoModelForSequenceClassification.from_pretrained(
-                    NLI_MODEL,
-                    low_cpu_mem_usage=True
-                )
-                model.to('cpu')
-                model.eval()
-            except (MemoryError, RuntimeError) as mem_err:
-                logger.error(f"Failed to allocate memory for DeBERTa model: {mem_err}")
-                raise InsufficientMemoryError(
-                    f"Out of memory allocating DeBERTa on CPU: {mem_err}"
-                )
-
-            _nli = (tok, model)
-            gc.collect()
-            logger.info(f"[GovVerify] RAM after DeBERTa: {get_process_memory_mb()} MB")
-    return _nli
+    """Returns local DeBERTa model if local provider is active."""
+    provider = get_nli_provider()
+    if hasattr(provider, '_get_model'):
+        return provider._get_model()
+    return None
 
 
 def get_nli():
@@ -55,15 +23,10 @@ def get_nli():
 
 
 def release_verifier_model():
-    """Explicitly frees DeBERTa NLI model from RAM to keep memory footprint below 512MB."""
-    global _nli
-    with _nli_lock:
-        if _nli is not None:
-            logger.info("Releasing DeBERTa NLI model from RAM...")
-            del _nli
-            _nli = None
-            gc.collect()
-            logger.info(f"[GovVerify] RAM after cleanup: {get_process_memory_mb()} MB")
+    """Explicitly frees DeBERTa NLI model from RAM."""
+    provider = get_nli_provider()
+    provider.release()
+
 
 
 
@@ -187,30 +150,13 @@ def verify(claim: str, evidence: str) -> Tuple[str, str, int, Dict[str, float], 
         prob_dict = {'entailment': 0.05, 'neutral': 0.05, 'contradiction': 0.90}
         return 'CONTRADICTED', 'CONTRADICTION', 92, prob_dict, conflict_reason
 
-    # 2. Run pretrained DeBERTa-v3 NLI
-    tok, model = get_nli()
-    inputs = tok(evidence, claim, return_tensors='pt', truncation=True, max_length=512)
-    
-    with torch.inference_mode():
-        logits = model(**inputs).logits
-        probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
+    # 2. Run DeBERTa NLI provider (Local CPU or Remote Provider)
+    provider = get_nli_provider()
+    prob_dict = provider.predict(premise=evidence, hypothesis=claim)
 
-    # Dynamic label mapping from model config
-    id2label = {int(k): str(v).lower() for k, v in model.config.id2label.items()}
-    
-    entail_idx = next((k for k, v in id2label.items() if 'entail' in v), 0)
-    neutral_idx = next((k for k, v in id2label.items() if 'neutral' in v), 1)
-    contrad_idx = next((k for k, v in id2label.items() if 'contrad' in v), 2)
-
-    p_entail = float(probs[entail_idx])
-    p_neutral = float(probs[neutral_idx])
-    p_contrad = float(probs[contrad_idx])
-
-    prob_dict = {
-        'entailment': round(p_entail, 4),
-        'neutral': round(p_neutral, 4),
-        'contradiction': round(p_contrad, 4)
-    }
+    p_entail = prob_dict.get('entailment', 0.0)
+    p_neutral = prob_dict.get('neutral', 0.0)
+    p_contrad = prob_dict.get('contradiction', 0.0)
 
     # Classification logic using configurable thresholds
     if p_entail >= NLI_ENTAILMENT_THRESHOLD and p_entail > max(p_neutral, p_contrad):
@@ -226,6 +172,6 @@ def verify(claim: str, evidence: str) -> Tuple[str, str, int, Dict[str, float], 
         mapped = 'NEUTRAL'
         confidence = int(round(max(p_neutral, 0.50) * 100))
 
-
     logger.info(f"[NLI_VERIFICATION] claim='{claim[:50]}...' -> {status} (Entail: {p_entail:.2f}, Neut: {p_neutral:.2f}, Contrad: {p_contrad:.2f})")
     return status, mapped, confidence, prob_dict, None
+

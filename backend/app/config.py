@@ -33,6 +33,13 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'BAAI/bge-m3')
 NLI_MODEL = os.getenv('NLI_MODEL', 'MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli')
 
+# Inference Provider Configuration (auto, local, remote, huggingface)
+INFERENCE_PROVIDER = os.getenv('INFERENCE_PROVIDER', 'auto').lower()
+HF_API_KEY = os.getenv('HF_API_KEY', os.getenv('HUGGINGFACE_API_KEY', os.getenv('HUGGING_FACE_HUB_TOKEN', ''))).strip()
+EMBEDDING_API_URL = os.getenv('EMBEDDING_API_URL', f'https://router.huggingface.co/hf-inference/models/{EMBEDDING_MODEL}')
+NLI_API_URL = os.getenv('NLI_API_URL', f'https://router.huggingface.co/hf-inference/models/{NLI_MODEL}')
+INFERENCE_TIMEOUT_SEC = float(os.getenv('INFERENCE_TIMEOUT_SEC', '30.0'))
+
 # Backend-only LLM Configuration
 LLM_BASE_URL = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1').rstrip('/')
 LLM_API_KEY = os.getenv('LLM_API_KEY', '')

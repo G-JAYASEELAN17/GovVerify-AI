@@ -485,4 +485,33 @@ def test_insufficient_memory_graceful_handling(monkeypatch):
     assert root_res.status_code == 200
 
 
+# Test 22: Inference Provider Routing & Extensibility
+def test_inference_provider_routing():
+    from app.services.providers import (
+        get_embedding_provider,
+        get_nli_provider,
+        LocalEmbeddingProvider,
+        RemoteEmbeddingProvider,
+        LocalNLIProvider,
+        RemoteNLIProvider
+    )
+    
+    # 1. Test local provider instantiation
+    local_emb = LocalEmbeddingProvider()
+    assert hasattr(local_emb, 'encode')
+    assert hasattr(local_emb, 'release')
+
+    local_nli = LocalNLIProvider()
+    assert hasattr(local_nli, 'predict')
+    assert hasattr(local_nli, 'release')
+
+    # 2. Test remote provider interface
+    remote_emb = RemoteEmbeddingProvider(api_url="https://router.huggingface.co/hf-inference/models/BAAI/bge-m3")
+    assert remote_emb.api_url.endswith("BAAI/bge-m3")
+
+    remote_nli = RemoteNLIProvider(api_url="https://router.huggingface.co/hf-inference/models/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli")
+    assert "DeBERTa" in remote_nli.api_url
+
+
+
 
