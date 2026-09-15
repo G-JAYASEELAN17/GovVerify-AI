@@ -20,11 +20,17 @@ def search(
     index, metadata = load_index()
     
     if index is None or not metadata or index.ntotal == 0:
+        logger.info("Vector index empty. Initializing official seed corpus lazily...")
+        from app.seed import ensure_seed_data
+        ensure_seed_data()
+        index, metadata = load_index()
+
+    if index is None or not metadata or index.ntotal == 0:
         logger.warning("Search called on empty vector index.")
         return []
 
     # Encode query with normalized embedding
-    q_emb = encode(query).astype('float32')
+    q_emb = encode(query, batch_size=1).astype('float32')
     
     # Query up to min(k * 2, total) to allow filtering if document_id or threshold is applied
     fetch_k = min(max(k * 2, 10), len(metadata))
@@ -63,10 +69,15 @@ def search(
 def search_with_diagnostics(query: str, k: int = 5) -> Dict:
     """Returns all top candidate results with raw scores, threshold, and acceptance flag for debugging."""
     index, metadata = load_index()
+    if index is None or not metadata or index.ntotal == 0:
+        from app.seed import ensure_seed_data
+        ensure_seed_data()
+        index, metadata = load_index()
+
     if index is None or not metadata:
         return {'query': query, 'threshold': SIMILARITY_THRESHOLD, 'total_candidates': 0, 'relevant_hits': []}
 
-    q_emb = encode(query).astype('float32')
+    q_emb = encode(query, batch_size=1).astype('float32')
     fetch_k = min(k, len(metadata))
     scores, indices = index.search(q_emb, fetch_k)
 

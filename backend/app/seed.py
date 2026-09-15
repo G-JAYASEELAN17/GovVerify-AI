@@ -5,7 +5,7 @@ import fitz
 
 from app.config import DOCS_DIR, logger
 from app.services.pdf_processor import extract_chunks
-from app.services.embeddings import encode
+from app.services.embeddings import encode, release_embedding_model
 from app.services.vector_store import add_chunks, register_document, get_all_documents
 
 # Multi-Domain Official Government Corpus for General Verification
@@ -142,6 +142,7 @@ def ensure_seed_data():
         register_document(doc_record)
 
     import gc
+    release_embedding_model()
     gc.collect()
     logger.info("Multi-domain official government corpus verification complete.")
 

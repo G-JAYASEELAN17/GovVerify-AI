@@ -24,8 +24,10 @@ except Exception:
 DATA_DIR = BASE_DIR / 'data'
 DOCS_DIR = DATA_DIR / 'documents'
 INDEX_DIR = DATA_DIR / 'index'
+UPLOADS_DIR = DATA_DIR / 'uploads'
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Pretrained AI Models
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'BAAI/bge-m3')
@@ -52,7 +54,10 @@ CORS_ORIGINS = [orig.strip() for orig in CORS_ORIGINS_RAW.split(',') if orig.str
     'http://localhost:3000',
     '*'
 ]
-MAX_FILE_SIZE_MB = int(os.getenv('MAX_FILE_SIZE_MB', '25'))
+MAX_FILE_SIZE_MB = int(os.getenv('MAX_UPLOAD_SIZE_MB', os.getenv('MAX_FILE_SIZE_MB', '25')))
+MAX_UPLOAD_SIZE_MB = MAX_FILE_SIZE_MB
+MAX_CHUNKS_PER_BATCH = int(os.getenv('MAX_CHUNKS_PER_BATCH', '8'))
+EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE', '2'))
 ALLOWED_EXTENSIONS = {'.pdf'}
 
 # Logging
@@ -62,4 +67,15 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s'
 )
 logger = logging.getLogger('GovVerify')
+
+
+def get_process_memory_mb() -> float:
+    """Returns current process RSS memory in megabytes (MB)."""
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        return round(process.memory_info().rss / (1024 * 1024), 2)
+    except Exception:
+        return 0.0
+
 

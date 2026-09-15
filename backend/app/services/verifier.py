@@ -12,14 +12,14 @@ _nli: Tuple[object, object] | None = None
 _nli_lock = Lock()
 
 
-def get_nli():
+def get_verifier_model():
     global _nli
     if _nli is not None:
         return _nli
 
     with _nli_lock:
         if _nli is None:
-            logger.info(f"Loading NLI verification model on CPU: {NLI_MODEL}")
+            logger.info(f"Loading NLI verification model on CPU (lazy): {NLI_MODEL}")
             tok = AutoTokenizer.from_pretrained(NLI_MODEL)
             model = AutoModelForSequenceClassification.from_pretrained(
                 NLI_MODEL,
@@ -27,9 +27,34 @@ def get_nli():
             )
             model.to('cpu')
             model.eval()
+            try:
+                # Dynamic INT8 quantization for CPU linear layers (reduces RAM footprint)
+                model = torch.quantization.quantize_dynamic(
+                    model, {torch.nn.Linear}, dtype=torch.qint8
+                )
+                model.eval()
+            except Exception as q_err:
+                logger.debug(f"DeBERTa dynamic quantization note: {q_err}")
+
             _nli = (tok, model)
             gc.collect()
     return _nli
+
+
+def get_nli():
+    return get_verifier_model()
+
+
+def release_verifier_model():
+    """Explicitly frees DeBERTa NLI model from RAM to keep memory footprint below 512MB."""
+    global _nli
+    with _nli_lock:
+        if _nli is not None:
+            logger.info("Releasing DeBERTa NLI model from RAM...")
+            del _nli
+            _nli = None
+            gc.collect()
+
 
 
 def extract_numeric_tokens(text: str) -> Dict[str, List[float]]:

@@ -352,3 +352,110 @@ def test_out_of_domain_question_rejection():
     assert report['coverage'] == 0
     assert len(report['claims']) == 0
     assert "No matching official evidence" in report['answer']
+
+
+# Test 16: Memory diagnostics and model release lifecycle
+def test_memory_diagnostics_and_lifecycle():
+    from app.config import get_process_memory_mb
+    from app.services.embeddings import get_embedding_model, release_embedding_model, _model as emb_model
+    from app.services.verifier import get_verifier_model, release_verifier_model, _nli as ver_model
+
+    ram = get_process_memory_mb()
+    assert isinstance(ram, float)
+    assert ram > 0.0
+
+    # Test explicit lifecycle release
+    release_embedding_model()
+    from app.services.embeddings import _model as emb_model_after
+    assert emb_model_after is None
+
+    release_verifier_model()
+    from app.services.verifier import _nli as ver_model_after
+    assert ver_model_after is None
+
+
+# Test 17: Streaming PDF upload, indexing, and subsequent retrieval
+def test_upload_pdf_streaming_and_retrieval(tmp_path: Path):
+    upload_pdf_path = tmp_path / "National_Solar_Energy_Policy_2026.pdf"
+    doc = fitz.open()
+    p1 = doc.new_page()
+    p1.insert_text((50, 50), "Government of India Ministry of New and Renewable Energy. National Solar Rooftop Scheme.")
+    p2 = doc.new_page()
+    p2.insert_text((50, 50), "Under the solar rooftop initiative, residential households receive a capital subsidy of up to 40 percent for installations up to 3 kW capacity.")
+    doc.save(str(upload_pdf_path))
+    doc.close()
+
+    with open(upload_pdf_path, 'rb') as f:
+        res = client.post('/api/documents/upload', files={'file': ('National_Solar_Energy_Policy_2026.pdf', f, 'application/pdf')})
+    
+    assert res.status_code == 200
+    doc_record = res.json()
+    assert doc_record['name'] == 'National_Solar_Energy_Policy_2026.pdf'
+    assert doc_record['status'] == 'Indexed'
+    assert doc_record['pages'] == 2
+    assert doc_record['claimsReferenced'] >= 2
+
+    # Check root & health endpoint remain alive and healthy
+    root_res = client.get('/')
+    assert root_res.status_code == 200
+    assert root_res.json()['status'] == 'running'
+
+    health_res = client.get('/health')
+    assert health_res.status_code == 200
+
+    # Check that evidence from the uploaded document is retrievable
+    solar_hits = search("What is the solar rooftop subsidy percentage?", k=3)
+    assert len(solar_hits) > 0
+    assert any("Solar" in h.get('document_name', '') for h in solar_hits)
+
+
+# Test 18: Scanned / Empty PDF upload graceful handling
+def test_upload_scanned_pdf(tmp_path: Path):
+    scanned_path = tmp_path / "Scanned_Certificate_Doc.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(str(scanned_path))
+    doc.close()
+
+    with open(scanned_path, 'rb') as f:
+        res = client.post('/api/documents/upload', files={'file': ('Scanned_Certificate_Doc.pdf', f, 'application/pdf')})
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data['status'] == 'OCR_Required'
+
+    # Backend remains alive
+    assert client.get('/').status_code == 200
+
+
+# Test 19: Invalid file type upload rejection
+def test_upload_invalid_file_type():
+    res = client.post('/api/documents/upload', files={'file': ('malicious.exe', b'fake binary', 'application/octet-stream')})
+    assert res.status_code == 400
+    assert "Invalid file format" in res.json()['detail']
+    assert client.get('/').status_code == 200
+
+
+# Test 20: Duplicate PDF upload hash deduplication
+def test_upload_duplicate_pdf_deduplication(tmp_path: Path):
+    dup_path = tmp_path / "Unique_Solar_Test.pdf"
+    doc = fitz.open()
+    p = doc.new_page()
+    p.insert_text((50, 50), "Unique solar energy guideline text for hash deduplication test.")
+    doc.save(str(dup_path))
+    doc.close()
+
+    with open(dup_path, 'rb') as f:
+        res1 = client.post('/api/documents/upload', files={'file': ('Unique_Solar_Test.pdf', f, 'application/pdf')})
+    assert res1.status_code == 200
+    doc1 = res1.json()
+
+    with open(dup_path, 'rb') as f:
+        res2 = client.post('/api/documents/upload', files={'file': ('Unique_Solar_Test.pdf', f, 'application/pdf')})
+    assert res2.status_code == 200
+    doc2 = res2.json()
+
+    assert doc1['id'] == doc2['id']
+    assert doc1['file_hash'] == doc2['file_hash']
+
+

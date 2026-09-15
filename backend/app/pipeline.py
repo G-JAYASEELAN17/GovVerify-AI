@@ -5,12 +5,56 @@ import json
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
-from app.config import DATA_DIR, SIMILARITY_THRESHOLD, logger
+from app.config import DATA_DIR, SIMILARITY_THRESHOLD, logger, get_process_memory_mb
 from app.services.retrieval import search
+from app.services.embeddings import release_embedding_model
 from app.services.llm import generate_answer, extract_claims, is_question_sentence
-from app.services.verifier import verify
+from app.services.verifier import verify, release_verifier_model
 
 REPORTS_PATH = DATA_DIR / 'reports.json'
+
+
+def aggregate_overall_status(claims: List[Dict]) -> Tuple[str, Dict[str, Any]]:
+    """
+    Pure deterministic aggregation function computing the 5 overall statuses:
+    - Verified: all claims supported
+    - Partially Verified: at least 1 claim supported with mixed/uncertain claims
+    - Contradicted: at least 1 claim contradicted and none supported (or explicit contradiction)
+    - Uncertain: inconclusive evidence
+    - Unsupported: no relevant evidence
+    """
+    supported_count = sum(1 for c in claims if c.get('status') == 'SUPPORTED')
+    uncertain_count = sum(1 for c in claims if c.get('status') == 'UNCERTAIN')
+    unsupported_count = sum(1 for c in claims if c.get('status') == 'UNSUPPORTED')
+    contradicted_count = sum(1 for c in claims if c.get('status') == 'CONTRADICTED')
+    total = max(1, len(claims))
+    coverage = round((supported_count / total) * 100)
+    verification_score = round(((supported_count * 1.0 + uncertain_count * 0.5) / total) * 100)
+
+    if len(claims) == 0:
+        overall_status = 'Unsupported'
+    elif supported_count == total:
+        overall_status = 'Verified'
+    elif supported_count > 0:
+        overall_status = 'Partially Verified'
+    elif contradicted_count > 0:
+        overall_status = 'Contradicted'
+    elif uncertain_count > 0:
+        overall_status = 'Uncertain'
+    else:
+        overall_status = 'Unsupported'
+
+    stats = {
+        'total_claims': len(claims),
+        'supported': supported_count,
+        'uncertain': uncertain_count,
+        'unsupported': unsupported_count,
+        'contradicted': contradicted_count,
+        'evidence_coverage': coverage,
+        'verification_score': verification_score,
+        'overall_score': coverage
+    }
+    return overall_status, stats
 
 
 def _normalize_report(r: Dict) -> Dict:
@@ -20,32 +64,11 @@ def _normalize_report(r: Dict) -> Dict:
     and ensuring required fields exist.
     """
     claims = r.get('claims', []) or []
-    supported = sum(1 for c in claims if c.get('status') == 'SUPPORTED')
-    uncertain = sum(1 for c in claims if c.get('status') == 'UNCERTAIN')
-    unsupported = sum(1 for c in claims if c.get('status') == 'UNSUPPORTED')
-    contradicted = sum(1 for c in claims if c.get('status') == 'CONTRADICTED')
-    total = len(claims)
+    computed_status, stats = aggregate_overall_status(claims)
     
-    if total > 0:
-        coverage = r.get('coverage', round((supported / total) * 100))
-        ver_score = round(((supported * 1.0 + uncertain * 0.5) / total) * 100)
-    else:
-        coverage = r.get('coverage', 0)
-        ver_score = 0
-
-    stats = r.get('stats') or {}
-    stats.setdefault('total_claims', total)
-    stats.setdefault('supported', supported)
-    stats.setdefault('uncertain', uncertain)
-    stats.setdefault('unsupported', unsupported)
-    stats.setdefault('contradicted', contradicted)
-    stats.setdefault('evidence_coverage', coverage)
-    stats.setdefault('verification_score', ver_score)
-    stats.setdefault('overall_score', coverage)
-    
-    r['stats'] = stats
-    r.setdefault('coverage', coverage)
-    r.setdefault('status', 'Unsupported')
+    r['stats'] = r.get('stats') or stats
+    r.setdefault('coverage', stats['evidence_coverage'])
+    r.setdefault('status', computed_status)
     r.setdefault('createdAt', datetime.now().astimezone().strftime('%d %b %Y, %I:%M %p'))
 
     # Normalize claim schema
@@ -177,8 +200,11 @@ def build_evidence_for_claim(claim: str, hits: List[Dict]) -> Tuple[Optional[Dic
 
 async def verify_answer_flow(answer: str, question: str = '') -> Dict:
     """
-    EXISTING ANSWER PIPELINE:
-    answer → extract factual claims → verify each claim independently against indexed evidence
+    EXISTING ANSWER PIPELINE with SEQUENTIAL MODEL LIFECYCLE:
+    1. Extract factual claims
+    2. Phase 1 (BGE-M3): Retrieve official evidence for each claim -> release BGE-M3
+    3. Phase 2 (DeBERTa): Verify claims against evidence candidates -> release DeBERTa
+    4. Compile deterministic report
     """
     # If the user passed a question into verify_answer_flow, seamlessly route to question flow
     if is_question_sentence(answer.strip()):
@@ -211,10 +237,21 @@ async def verify_answer_flow(answer: str, question: str = '') -> Dict:
         _save_report(report)
         return report
 
-    claims: List[Dict] = []
-    for i, claim in enumerate(claims_text, 1):
-        # Independent retrieval per atomic claim
+    # --- Phase 1: Semantic Retrieval with BGE-M3 ---
+    logger.info(f"[GovVerify] RAM before BGE: {get_process_memory_mb()} MB")
+    claims_with_hits = []
+    for claim in claims_text:
         hits = search(claim, k=5)
+        claims_with_hits.append((claim, hits))
+
+    # Release BGE-M3 before loading DeBERTa
+    release_embedding_model()
+    logger.info(f"[GovVerify] RAM after BGE: {get_process_memory_mb()} MB")
+
+    # --- Phase 2: NLI Verification with DeBERTa ---
+    logger.info(f"[GovVerify] RAM before DeBERTa: {get_process_memory_mb()} MB")
+    claims: List[Dict] = []
+    for i, (claim, hits) in enumerate(claims_with_hits, 1):
         evidence, result_tuple = build_evidence_for_claim(claim, hits)
         status, nli, conf, reason, nli_prob, probs, num_conflict = result_tuple
 
@@ -232,36 +269,12 @@ async def verify_answer_flow(answer: str, question: str = '') -> Dict:
             'evidence': evidence
         })
 
-    supported_count = sum(c['status'] == 'SUPPORTED' for c in claims)
-    uncertain_count = sum(c['status'] == 'UNCERTAIN' for c in claims)
-    unsupported_count = sum(c['status'] == 'UNSUPPORTED' for c in claims)
-    contradicted_count = sum(c['status'] == 'CONTRADICTED' for c in claims)
-    total = max(1, len(claims))
-    coverage = round((supported_count / total) * 100)
-    verification_score = round(((supported_count * 1.0 + uncertain_count * 0.5) / total) * 100)
+    # Release DeBERTa after verification is finished
+    release_verifier_model()
+    logger.info(f"[GovVerify] RAM after DeBERTa: {get_process_memory_mb()} MB")
 
-    # Deterministic 5-status aggregation:
-    if supported_count == total:
-        overall_status = 'Verified'
-    elif supported_count > 0:
-        overall_status = 'Partially Verified'
-    elif contradicted_count > 0:
-        overall_status = 'Contradicted'
-    elif uncertain_count > 0:
-        overall_status = 'Uncertain'
-    else:
-        overall_status = 'Unsupported'
-
-    stats = {
-        'total_claims': len(claims),
-        'supported': supported_count,
-        'uncertain': uncertain_count,
-        'unsupported': unsupported_count,
-        'contradicted': contradicted_count,
-        'evidence_coverage': coverage,
-        'verification_score': verification_score,
-        'overall_score': coverage
-    }
+    overall_status, stats = aggregate_overall_status(claims)
+    coverage = stats['evidence_coverage']
 
     report = {
         'id': f'report-{uuid4().hex[:10]}',
@@ -276,19 +289,27 @@ async def verify_answer_flow(answer: str, question: str = '') -> Dict:
     
     _save_report(report)
     gc.collect()
+    logger.info(f"[GovVerify] RAM after cleanup: {get_process_memory_mb()} MB")
     return report
 
 
 async def verify_question_flow(question: str) -> Dict:
     """
-    QUESTION PIPELINE:
-    question → retrieve evidence passages → generate grounded answer → extract claims from answer → verify claims
+    QUESTION PIPELINE with SEQUENTIAL MODEL LIFECYCLE:
+    1. Phase 1 (BGE-M3): Retrieve official evidence for question
+    2. Generate grounded answer
+    3. Extract factual claims
+    4. Phase 1b (BGE-M3): Retrieve official evidence for each claim -> release BGE-M3
+    5. Phase 2 (DeBERTa): Verify claims against evidence candidates -> release DeBERTa
+    6. Compile deterministic report
     """
-    # 1. Retrieve relevant official evidence
+    # 1. Retrieve relevant official evidence with BGE-M3
+    logger.info(f"[GovVerify] RAM before BGE: {get_process_memory_mb()} MB")
     hits = search(question, k=5)
     
     # 2. If no evidence passes the similarity threshold
     if not hits or float(hits[0].get('score', 0.0)) < SIMILARITY_THRESHOLD:
+        release_embedding_model()
         logger.info(f"[QUESTION_PIPELINE] No relevant evidence found above threshold {SIMILARITY_THRESHOLD} for: '{question[:60]}'")
         no_ev_answer = "No matching official evidence was found in the indexed government repository for this query. Please upload the relevant official scheme guidelines."
         report = {
@@ -311,6 +332,8 @@ async def verify_question_flow(question: str) -> Dict:
             }
         }
         _save_report(report)
+        gc.collect()
+        logger.info(f"[GovVerify] RAM after cleanup: {get_process_memory_mb()} MB")
         return report
 
     # 3. Generate grounded answer strictly from retrieved official evidence
@@ -324,6 +347,7 @@ async def verify_question_flow(question: str) -> Dict:
         claims_text = sentences[:4] if sentences else []
 
     if not claims_text:
+        release_embedding_model()
         report = {
             'id': f'report-{uuid4().hex[:10]}',
             'question': question,
@@ -344,12 +368,24 @@ async def verify_question_flow(question: str) -> Dict:
             }
         }
         _save_report(report)
+        gc.collect()
+        logger.info(f"[GovVerify] RAM after cleanup: {get_process_memory_mb()} MB")
         return report
 
-    # 5. Verify each factual claim independently
-    claims: List[Dict] = []
-    for i, claim in enumerate(claims_text, 1):
+    # 5. Search evidence for each claim with BGE-M3
+    claims_with_hits = []
+    for claim in claims_text:
         claim_hits = search(claim, k=5)
+        claims_with_hits.append((claim, claim_hits))
+
+    # Release BGE-M3 before loading DeBERTa
+    release_embedding_model()
+    logger.info(f"[GovVerify] RAM after BGE: {get_process_memory_mb()} MB")
+
+    # --- Phase 2: NLI Verification with DeBERTa ---
+    logger.info(f"[GovVerify] RAM before DeBERTa: {get_process_memory_mb()} MB")
+    claims: List[Dict] = []
+    for i, (claim, claim_hits) in enumerate(claims_with_hits, 1):
         evidence, result_tuple = build_evidence_for_claim(claim, claim_hits)
         status, nli, conf, reason, nli_prob, probs, num_conflict = result_tuple
 
@@ -367,35 +403,12 @@ async def verify_question_flow(question: str) -> Dict:
             'evidence': evidence
         })
 
-    supported_count = sum(c['status'] == 'SUPPORTED' for c in claims)
-    uncertain_count = sum(c['status'] == 'UNCERTAIN' for c in claims)
-    unsupported_count = sum(c['status'] == 'UNSUPPORTED' for c in claims)
-    contradicted_count = sum(c['status'] == 'CONTRADICTED' for c in claims)
-    total = max(1, len(claims))
-    coverage = round((supported_count / total) * 100)
-    verification_score = round(((supported_count * 1.0 + uncertain_count * 0.5) / total) * 100)
+    # Release DeBERTa after verification is finished
+    release_verifier_model()
+    logger.info(f"[GovVerify] RAM after DeBERTa: {get_process_memory_mb()} MB")
 
-    if supported_count == total:
-        overall_status = 'Verified'
-    elif supported_count > 0:
-        overall_status = 'Partially Verified'
-    elif contradicted_count > 0:
-        overall_status = 'Contradicted'
-    elif uncertain_count > 0:
-        overall_status = 'Uncertain'
-    else:
-        overall_status = 'Unsupported'
-
-    stats = {
-        'total_claims': len(claims),
-        'supported': supported_count,
-        'uncertain': uncertain_count,
-        'unsupported': unsupported_count,
-        'contradicted': contradicted_count,
-        'evidence_coverage': coverage,
-        'verification_score': verification_score,
-        'overall_score': coverage
-    }
+    overall_status, stats = aggregate_overall_status(claims)
+    coverage = stats['evidence_coverage']
 
     report = {
         'id': f'report-{uuid4().hex[:10]}',
@@ -410,5 +423,6 @@ async def verify_question_flow(question: str) -> Dict:
     
     _save_report(report)
     gc.collect()
+    logger.info(f"[GovVerify] RAM after cleanup: {get_process_memory_mb()} MB")
     return report
 
