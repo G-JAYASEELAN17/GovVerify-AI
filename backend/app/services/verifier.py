@@ -5,7 +5,7 @@ from typing import Tuple, Dict, Optional, List
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-from app.config import NLI_MODEL, NLI_ENTAILMENT_THRESHOLD, NLI_CONTRADICTION_THRESHOLD, logger
+from app.config import NLI_MODEL, NLI_ENTAILMENT_THRESHOLD, NLI_CONTRADICTION_THRESHOLD, logger, get_process_memory_mb
 
 
 _nli: Tuple[object, object] | None = None
@@ -19,7 +19,8 @@ def get_verifier_model():
 
     with _nli_lock:
         if _nli is None:
-            logger.info(f"Loading NLI verification model on CPU (lazy): {NLI_MODEL}")
+            logger.info(f"[GovVerify] RAM before DeBERTa: {get_process_memory_mb()} MB")
+            logger.info(f"[GovVerify] Loading DeBERTa NLI model on CPU: {NLI_MODEL}")
             tok = AutoTokenizer.from_pretrained(NLI_MODEL)
             model = AutoModelForSequenceClassification.from_pretrained(
                 NLI_MODEL,
@@ -38,6 +39,7 @@ def get_verifier_model():
 
             _nli = (tok, model)
             gc.collect()
+            logger.info(f"[GovVerify] RAM after DeBERTa: {get_process_memory_mb()} MB")
     return _nli
 
 
@@ -54,6 +56,8 @@ def release_verifier_model():
             del _nli
             _nli = None
             gc.collect()
+            logger.info(f"[GovVerify] RAM after cleanup: {get_process_memory_mb()} MB")
+
 
 
 

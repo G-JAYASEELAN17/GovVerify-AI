@@ -66,7 +66,11 @@ def _normalize_report(r: Dict) -> Dict:
     claims = r.get('claims', []) or []
     computed_status, stats = aggregate_overall_status(claims)
     
-    r['stats'] = r.get('stats') or stats
+    if not r.get('stats') or not isinstance(r.get('stats'), dict):
+        r['stats'] = stats
+    else:
+        for k, v in stats.items():
+            r['stats'].setdefault(k, v)
     r.setdefault('coverage', stats['evidence_coverage'])
     r.setdefault('status', computed_status)
     r.setdefault('createdAt', datetime.now().astimezone().strftime('%d %b %Y, %I:%M %p'))

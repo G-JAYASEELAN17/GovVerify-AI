@@ -45,7 +45,6 @@ from app.services.vector_store import (
     get_document_by_hash
 )
 from app.services.retrieval import search_with_diagnostics
-from app.seed import ensure_seed_data
 
 
 @asynccontextmanager
