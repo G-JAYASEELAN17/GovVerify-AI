@@ -2,7 +2,11 @@ import type { DocumentRecord, VerificationReport, Claim } from '@/types';
 
 export type ProgressFn = (step: string, pct: number) => void;
 
-export const API_URL = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://govverify-ai.onrender.com').replace(/\/$/, '');
+export const API_URL = (
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.DEV ? 'http://127.0.0.1:8000' : 'https://govverify-ai.onrender.com')
+).replace(/\/$/, '');
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   try {
@@ -35,7 +39,7 @@ const progress = async (onProgress: ProgressFn | undefined, steps: [string, numb
 
 export async function checkBackendHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(10000) });
     return res.ok;
   } catch {
     return false;

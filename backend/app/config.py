@@ -48,6 +48,8 @@ NLI_CONTRADICTION_THRESHOLD = float(os.getenv('NLI_CONTRADICTION_THRESHOLD', '0.
 FRONTEND_ORIGIN = os.getenv('FRONTEND_ORIGIN', 'http://localhost:5173')
 CORS_ORIGINS_RAW = os.getenv('CORS_ORIGINS', '')
 CORS_ORIGINS = [orig.strip() for orig in CORS_ORIGINS_RAW.split(',') if orig.strip()] if CORS_ORIGINS_RAW else [
+    'https://govverify-ai-nu.vercel.app',
+    'https://govverify-ai.vercel.app',
     FRONTEND_ORIGIN,
     'http://localhost:5173',
     'http://127.0.0.1:5173',
